@@ -141,8 +141,14 @@ pipeline {
                 sudo docker pull "$ECR_URL:$IMAGE_TAG"
                 sudo docker save "$ECR_URL:$IMAGE_TAG" -o /tmp/img.tar
                 sudo k3s ctr images import /tmp/img.tar
-                sudo k3s kubectl set image deployment/website website="$ECR_URL:$IMAGE_TAG" || \\
-                  sudo k3s kubectl create deployment website --image="$ECR_URL:$IMAGE_TAG"
+                # Wait for the boot script to create the deployment, then just
+                # update its image. (Do NOT 'create deployment' — that derives a
+                # second container from the image name and clashes on port 80.)
+                for d in \\$(seq 1 30); do
+                  sudo k3s kubectl get deployment website >/dev/null 2>&1 && break
+                  echo "waiting for deployment to exist (\\$d)..."; sleep 10
+                done
+                sudo k3s kubectl set image deployment/website website="$ECR_URL:$IMAGE_TAG"
                 sudo k3s kubectl rollout status deployment/website --timeout=180s
 EOF
             '''
