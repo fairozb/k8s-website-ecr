@@ -68,7 +68,15 @@ pipeline {
       when { expression { return params.APPLY_INFRA } }
       steps {
         dir(env.TF_DIR) {
-          sh 'terraform plan -input=false -out=tfplan -var="image_tag=${IMAGE_TAG}"'
+          // Compute this Jenkins server's public IP so the app server's
+          // security group allows Jenkins to SSH in for the deploy stage.
+          sh '''
+            MYIP=$(curl -s http://checkip.amazonaws.com || curl -s https://api.ipify.org)
+            terraform plan -input=false -out=tfplan \
+              -var="image_tag=${IMAGE_TAG}" \
+              -var="key_name=terraform-docker-key" \
+              -var="allowed_ssh_cidr=${MYIP}/32"
+          '''
         }
       }
     }
@@ -121,9 +129,14 @@ pipeline {
               env.EC2_IP = sh(script: 'terraform output -raw public_ip', returnStdout: true).trim()
             }
             sh '''
-              ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "$SSH_USER@$EC2_IP" bash -s <<EOF
+              ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 -i "$SSH_KEY" "$SSH_USER@$EC2_IP" bash -s <<EOF
                 set -euxo pipefail
                 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+                # Wait until the new server has finished installing Docker + k3s.
+                for i in \\$(seq 1 40); do
+                  if command -v docker >/dev/null && sudo k3s kubectl get nodes >/dev/null 2>&1; then break; fi
+                  echo "waiting for docker + k3s to be ready (\\$i)..."; sleep 15
+                done
                 REGISTRY=\\$(echo "$ECR_URL" | cut -d'/' -f1)
                 aws ecr get-login-password --region "$AWS_REGION" | sudo docker login --username AWS --password-stdin "\\$REGISTRY"
                 sudo docker pull "$ECR_URL:$IMAGE_TAG"
@@ -131,7 +144,7 @@ pipeline {
                 sudo k3s ctr images import /tmp/img.tar
                 sudo k3s kubectl set image deployment/website website="$ECR_URL:$IMAGE_TAG" || \\
                   sudo k3s kubectl create deployment website --image="$ECR_URL:$IMAGE_TAG"
-                sudo k3s kubectl rollout status deployment/website --timeout=120s
+                sudo k3s kubectl rollout status deployment/website --timeout=180s
 EOF
             '''
           }
