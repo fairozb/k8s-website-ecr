@@ -1,0 +1,80 @@
+#!/bin/bash
+# ============================================================
+# First-boot automation: install k3s and deploy the image
+# that was pushed to ECR. The instance uses its IAM role to
+# authenticate to ECR — no credentials are stored on the box.
+# ============================================================
+set -euxo pipefail
+exec > >(tee /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+export DEBIAN_FRONTEND=noninteractive
+
+# --- Docker + AWS CLI + k3s ---
+apt-get update -y
+apt-get install -y docker.io awscli
+systemctl enable --now docker
+
+curl -sfL https://get.k3s.io | sh -
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+
+# --- Log in to ECR using the instance's IAM role, then pull the image ---
+REGISTRY="$(echo "${ecr_repository}" | cut -d'/' -f1)"
+aws ecr get-login-password --region "${aws_region}" \
+  | docker login --username AWS --password-stdin "$REGISTRY"
+
+docker pull "${ecr_repository}:${image_tag}"
+
+# --- Make the image available to k3s (containerd) ---
+docker save "${ecr_repository}:${image_tag}" -o /opt/website.tar
+k3s ctr images import /opt/website.tar
+
+# --- Kubernetes manifests (image = the ECR image, imported locally) ---
+mkdir -p /opt/k8s
+cat > /opt/k8s/deployment.yaml <<DEPLOY
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: website
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: website
+  template:
+    metadata:
+      labels:
+        app: website
+    spec:
+      containers:
+        - name: website
+          image: ${ecr_repository}:${image_tag}
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 80
+DEPLOY
+
+cat > /opt/k8s/service.yaml <<'SVC'
+apiVersion: v1
+kind: Service
+metadata:
+  name: website-service
+spec:
+  type: NodePort
+  selector:
+    app: website
+  ports:
+    - port: 80
+      targetPort: 80
+      nodePort: 30001
+SVC
+
+# --- Wait for k3s, then deploy ---
+until kubectl get nodes >/dev/null 2>&1; do
+  echo "waiting for k3s..."
+  sleep 5
+done
+
+kubectl apply -f /opt/k8s/deployment.yaml
+kubectl apply -f /opt/k8s/service.yaml
+
+echo "Deployment complete. Website on NodePort 30001."
