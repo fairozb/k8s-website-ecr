@@ -142,7 +142,10 @@ resource "aws_instance" "k3s" {
     ecr_repository = aws_ecr_repository.app.repository_url
     image_tag      = var.image_tag
   })
-  user_data_replace_on_change = true
+  # Keep the server alive across builds. The boot script installs k3s and
+  # does the initial deploy; subsequent builds just update the running
+  # deployment's image in the pipeline (fast ~1-min builds instead of ~8).
+  user_data_replace_on_change = false
 
   root_block_device {
     volume_type = "gp3"
