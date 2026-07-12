@@ -14,12 +14,15 @@ apt-get update -y
 apt-get install -y docker.io awscli
 systemctl enable --now docker
 
-# Retry the k3s install to survive transient GitHub download failures.
+# Install k3s. Pin the version so the installer skips the flaky GitHub
+# "latest version" lookup that fails at boot; retry for transient errors.
 for i in 1 2 3 4 5; do
-  curl -sfL https://get.k3s.io | sh - && break
+  curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.36.2+k3s1 sh - && break
   echo "k3s install attempt $i failed, retrying in 15s..."
   sleep 15
 done
+# Fail loudly (and stop the boot script) if k3s still isn't installed.
+command -v k3s >/dev/null 2>&1 || { echo "FATAL: k3s failed to install"; exit 1; }
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
 # --- Log in to ECR using the instance's IAM role, then pull the image ---
