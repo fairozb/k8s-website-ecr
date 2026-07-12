@@ -29,7 +29,7 @@ pipeline {
     PROJECT      = 'k8s-website-ecr'
     TF_DIR       = '.'
     IMAGE_TAG    = "${params.IMAGE_TAG ?: 'build-' + env.BUILD_NUMBER}"
-    NOTIFY_EMAIL = 'your-email@gmail.com'
+    NOTIFY_EMAIL = 'fairozb11@gmail.com'
   }
 
   triggers {
